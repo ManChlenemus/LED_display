@@ -1,0 +1,11 @@
+services:
+  led-proxy:
+    build: .
+    container_name: led-proxy
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - DEVICE_KEY=${DEVICE_KEY}
+      - ALLOWED_CHAT_ID=${ALLOWED_CHAT_ID}

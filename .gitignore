@@ -1,0 +1,10 @@
+.pio
+.pio-core
+.vscode
+src/secrets.h
+VPS/.env
+lib
+cmm
+test
+include
+LED_display
