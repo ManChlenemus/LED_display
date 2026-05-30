@@ -1,10 +1,10 @@
 .pio
 .pio-core
 .vscode
-src/secrets.h
-VPS/.env
-lib
-cmm
-test
 include
+lib
+src/secrets.h
+test
+versions
+VPS/.env
 LED_display

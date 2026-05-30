@@ -1007,16 +1007,19 @@ bool downloadImageFromProxy(uint32_t newImageId) {
   http.end();
   client.stop();
 
+  uint32_t waitStart = millis();
+  while (millis() - waitStart < 50) {
+    yield();
+  }
+
   FastLED.clear();
 
-  int pixelIndex = 0;
-
+  uint16_t pixelIndex = 0;
   for (uint8_t y = 0; y < HEIGHT; y++) {
     for (uint8_t x = 0; x < WIDTH; x++) {
       uint8_t r = imgBuffer[pixelIndex++];
       uint8_t g = imgBuffer[pixelIndex++];
       uint8_t b = imgBuffer[pixelIndex++];
-
       drawPixel(x, y, CRGB(r, g, b));
     }
   }
@@ -1536,6 +1539,11 @@ void loop() {
   }
 
   if (imageModeEnabled) {
+    static uint32_t lastImageShowTime = 0;
+    if (millis() - lastImageShowTime > 1000) {
+      lastImageShowTime = millis();
+      FastLED.show();
+    }
     return;
   }
 
