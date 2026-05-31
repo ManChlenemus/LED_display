@@ -6,7 +6,9 @@
 #include <ESP8266WiFi.h>
 #include <FastLED.h>
 
+#include "../fonts/fonts.h"
 #include "secrets.h"
+uint8_t currentFontIndex = 0;
 
 #define LED_TYPE WS2812B
 #define COLOR_ORDER GRB
@@ -70,6 +72,17 @@ uint32_t fireTime = 0;
 
 uint32_t plasmaTime = 0;
 
+uint8_t solidR = 0;
+uint8_t solidG = 229;
+uint8_t solidB = 255;
+
+uint8_t textR = 0;
+uint8_t textG = 66;
+uint8_t textB = 169;
+
+String scrollingText = "Hello, world!";
+int16_t textPositionX = WIDTH;
+
 struct EffectDescriptor {
   const char* name;
   void (*reset)();
@@ -90,6 +103,52 @@ void drawPixel(uint8_t x, uint8_t y, CRGB color) {
   }
 
   leds[XY(x, y)] = color;
+}
+
+String utf8ToCp1251(const String& utf8) {
+  String res = "";
+  for (size_t i = 0; i < utf8.length(); i++) {
+    uint8_t c = utf8[i];
+    if (c < 128) {
+      res += (char)c;
+    } else if (c == 0xD0 && i + 1 < utf8.length()) {
+      uint8_t c2 = utf8[++i];
+      if (c2 == 0x81)
+        res += (char)168;
+      else if (c2 >= 0x90 && c2 <= 0xBF)
+        res += (char)(c2 + 48);
+    } else if (c == 0xD1 && i + 1 < utf8.length()) {
+      uint8_t c2 = utf8[++i];
+      if (c2 == 0x91)
+        res += (char)184;
+      else if (c2 >= 0x80 && c2 <= 0x8F)
+        res += (char)(c2 + 112);
+    }
+  }
+  return res;
+}
+
+uint8_t drawChar(uint8_t code, int16_t startX, int16_t startY, CRGB color) {
+  Glyph g = getGlyph(code, currentFontIndex);
+  if (g.width == 0 || g.data == nullptr) return 6;
+
+  int byteIndex = 0;
+  for (uint8_t col = 0; col < g.width; col++) {
+    uint8_t b0 = pgm_read_byte(&(g.data[byteIndex++]));
+    uint8_t b1 = pgm_read_byte(&(g.data[byteIndex++]));
+    uint8_t b2 = pgm_read_byte(&(g.data[byteIndex++]));
+
+    int16_t x = startX + col;
+    if (x < 0 || x >= WIDTH) continue;
+
+    for (uint8_t row = 0; row < 8; row++)
+      if (b0 & (1 << row)) drawPixel(x, startY + row, color);
+    for (uint8_t row = 8; row < 16; row++)
+      if (b1 & (1 << (row - 8))) drawPixel(x, startY + row, color);
+    for (uint8_t row = 16; row < 24; row++)
+      if (b2 & (1 << (row - 16))) drawPixel(x, startY + row, color);
+  }
+  return g.width;
 }
 
 void resetRainbow() { baseHue = 0; }
@@ -270,6 +329,49 @@ void renderPlasma() {
   FastLED.show();
 }
 
+void resetSolid() { FastLED.clear(); }
+
+void updateSolid() {}
+
+void renderSolid() {
+  fill_solid(leds, NUM_LEDS, CRGB(solidR, solidG, solidB));
+  FastLED.show();
+}
+
+void resetText() {
+  textPositionX = WIDTH;
+  FastLED.clear();
+}
+
+void updateText() {
+  textPositionX--;
+
+  int totalWidth = 0;
+  for (uint16_t i = 0; i < scrollingText.length(); i++) {
+    uint8_t code = scrollingText[i];
+    Glyph g = getGlyph(code, currentFontIndex);
+    totalWidth += (g.width > 0 ? g.width : 6) + 1;
+  }
+
+  if (textPositionX < -totalWidth) {
+    textPositionX = WIDTH;
+  }
+}
+
+void renderText() {
+  FastLED.clear();
+  int16_t cursorX = textPositionX;
+  CRGB textColor = CRGB(textR, textG, textB);
+
+  for (uint16_t i = 0; i < scrollingText.length(); i++) {
+    uint8_t code = scrollingText[i];
+    uint8_t w = drawChar(code, cursorX, 0, textColor);
+    cursorX += w + 1;
+  }
+
+  FastLED.show();
+}
+
 EffectDescriptor effects[] = {
   { "rainbow", resetRainbow, updateRainbow, renderRainbow },
   { "dot", resetDot, updateDot, renderDot },
@@ -277,7 +379,9 @@ EffectDescriptor effects[] = {
   { "wave", resetWave, updateWave, renderWave },
   { "confetti", resetConfetti, updateConfetti, renderConfetti },
   { "fire", resetFire, updateFire, renderFire },
-  { "plasma", resetPlasma, updatePlasma, renderPlasma }
+  { "plasma", resetPlasma, updatePlasma, renderPlasma },
+  { "solid", resetSolid, updateSolid, renderSolid },
+  { "text", resetText, updateText, renderText }
 };
 
 constexpr uint8_t EFFECT_COUNT = sizeof(effects) / sizeof(effects[0]);
@@ -599,6 +703,78 @@ String processCommand(String command) {
 
     Serial.println(F("Image mode requested"));
     return "Image mode requested";
+  } else if (command.startsWith("/color ")) {
+    String hex = command.substring(7);
+    hex.trim();
+
+    if (hex.startsWith("#")) {
+      hex = hex.substring(1);
+    }
+
+    if (hex.length() == 6) {
+      long number = strtol(hex.c_str(), NULL, 16);
+
+      solidR = (number >> 16) & 0xFF;
+      solidG = (number >> 8) & 0xFF;
+      solidB = number & 0xFF;
+
+      int8_t effectIndex = findEffectByName("solid");
+      if (effectIndex >= 0) {
+        setEffect(effectIndex);
+        panelEnabled = true;
+      }
+
+      String reply = "Color changed to #" + hex;
+      Serial.println(reply);
+      return reply;
+    }
+
+    String reply = "Invalid HEX color format";
+    Serial.println(reply);
+    return reply;
+  } else if (command.startsWith("/text ")) {
+    String newText = command.substring(6);
+    newText.trim();
+
+    scrollingText = utf8ToCp1251(newText);
+
+    int8_t effectIndex = findEffectByName("text");
+    if (effectIndex >= 0) {
+      setEffect(effectIndex);
+      panelEnabled = true;
+    }
+
+    Serial.println("Text set (CP1251)");
+    return "Text set";
+  } else if (command.startsWith("/textcolor ")) {
+    String hex = command.substring(11);
+    hex.trim();
+
+    if (hex.startsWith("#")) hex = hex.substring(1);
+
+    if (hex.length() == 6) {
+      long number = strtol(hex.c_str(), NULL, 16);
+
+      textR = (number >> 16) & 0xFF;
+      textG = (number >> 8) & 0xFF;
+      textB = number & 0xFF;
+
+      String reply = "Text color changed to #" + hex;
+      Serial.println(reply);
+      return reply;
+    }
+
+    return "Invalid HEX text color";
+  } else if (command.startsWith("/font ")) {
+    int fontIdx = command.substring(6).toInt();
+
+    if (fontIdx >= 0 && fontIdx < CUSTOM_FONT_COUNT) {
+      currentFontIndex = fontIdx;
+      Serial.println("Font changed to index: " + String(currentFontIndex));
+      return "Font changed";
+    } else {
+      return "Invalid font index";
+    }
   } else if (command == "/tg on") {
     telegramPollingEnabled = true;
     lastProxyCheckTime = 0;
@@ -1302,6 +1478,48 @@ const char indexHtml[] PROGMEM = R"rawliteral(
              onchange="sendCommand('/brightness ' + this.value)">
     </div>
 
+    <!-- Solid Color -->
+    <div class="card">
+      <h2 class="card-title">Solid Color</h2>
+      <div style="display: flex; align-items: center; justify-content: space-between; background: #121212; padding: 12px; border-radius: 10px; border: 1px solid #3a3a45;">
+        <span id="colorHex" style="font-size: 1.1rem; font-weight: bold; color: var(--accent); letter-spacing: 1px;">#00E5FF</span>
+        <input type="color" id="colorPicker" value="#00e5ff" style="width: 60px; height: 42px; border: 1px solid #3a3a45; border-radius: 6px; cursor: pointer; background: none; padding: 0;" onchange="sendColor(this.value)">
+      </div>
+    </div>
+
+    <!-- Scrolling Text -->
+    <div class="card">
+      <h2 class="card-title">Scrolling Text</h2>
+      
+      <div class="custom-cmd" style="margin-bottom: 12px;">
+        <select id="fontSelect" onchange="sendCommand('/font ' + this.value)" style="width: 100%; padding: 12px; background: #121212; color: #fff; border: 1px solid #3a3a45; border-radius: 10px; font-size: 15px; cursor: pointer; appearance: auto;">
+          <optgroup label="HSE Sans">
+            <option value="0">HSE Sans Black</option>
+            <option value="1">HSE Sans Bold</option>
+            <option value="2">HSE Sans Italic</option>
+            <option value="3">HSE Sans Regular</option>
+            <option value="4">HSE Sans SemiBold</option>
+            <option value="5">HSE Sans Thin</option>
+          </optgroup>
+          <optgroup label="HSE Slab">
+            <option value="6">HSE Slab Black</option>
+            <option value="7">HSE Slab Italic</option>
+            <option value="8">HSE Slab Regular</option>
+          </optgroup>
+        </select>
+      </div>
+
+      <div style="display: flex; align-items: center; justify-content: space-between; background: #121212; padding: 12px; border-radius: 10px; border: 1px solid #3a3a45; margin-bottom: 12px;">
+        <span style="font-size: 1rem; color: var(--text-muted);">Text Color</span>
+        <input type="color" id="textColorPicker" value="#0042A9" style="width: 60px; height: 42px; border: 1px solid #3a3a45; border-radius: 6px; cursor: pointer; background: none; padding: 0;" onchange="sendCommand('/textcolor ' + this.value)">
+      </div>
+
+      <div class="custom-cmd">
+        <input id="textInput" type="text" placeholder="Введите текст..." onkeypress="if(event.key === 'Enter') sendScrollText()">
+        <button onclick="sendScrollText()">SEND</button>
+      </div>
+    </div>
+
     <!-- Effects -->
     <div class="card">
       <h2 class="card-title">Effects</h2>
@@ -1367,6 +1585,11 @@ const char indexHtml[] PROGMEM = R"rawliteral(
       }
     }
 
+    function sendColor(hex) {
+      document.getElementById('colorHex').innerText = hex.toUpperCase();
+      sendCommand('/color ' + hex);
+    }
+
     async function loadStatus() {
       try {
         const response = await fetch('/status');
@@ -1402,7 +1625,7 @@ const char indexHtml[] PROGMEM = R"rawliteral(
           <div class="status-row"><span class="status-label">Mode</span><span class="status-value">${data.imageMode === 'on' ? 'IMAGE' : 'EFFECT'}</span></div>
           <div class="status-row"><span class="status-label">Effect</span><span class="status-value">${data.effect.toUpperCase()}</span></div>
           <div class="status-row"><span class="status-label">Image ID</span><span class="status-value">${data.imageId}</span></div>
-          <div class="status-row"><span class="status-label">Wi-Fi</span><span class="status-value">${data.staConnected === 'true' ? 'Connected' : 'Disconnected'}</span></div>
+          <div class="status-row"><span class="status-label">Wi-Fi</span><span class="status-value">${data.staConnected ? 'Connected' : 'Disconnected'}</span></div>
           <div class="status-row"><span class="status-label">IP Address</span><span class="status-value">${data.staIp}</span></div>
           <div class="status-row"><span class="status-label">AP IP</span><span class="status-value">${data.apIp}</span></div>
           <div class="status-row"><span class="status-label">Free RAM</span><span class="status-value">${Math.round(data.freeHeap/1024)} KB</span></div>
@@ -1416,6 +1639,14 @@ const char indexHtml[] PROGMEM = R"rawliteral(
     loadStatus();
     // Auto-refresh every 5 seconds
     setInterval(loadStatus, 5000);
+
+    function sendScrollText() {
+      const input = document.getElementById('textInput');
+      if(input.value) {
+        sendCommand('/text ' + input.value);
+        input.value = '';
+      }
+    }
   </script>
 </body>
 </html>

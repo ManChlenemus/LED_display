@@ -1,6 +1,7 @@
 .pio
 .pio-core
 .vscode
+.venv
 include
 lib
 src/secrets.h
