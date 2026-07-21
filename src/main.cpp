@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <FastLED.h>
+#include <time.h>
 
 #include "../fonts/fonts.h"
 #include "secrets.h"
@@ -398,6 +399,61 @@ void renderSpectrogram() {
   FastLED.show();
 }
 
+void resetClock() {
+  FastLED.clear();
+}
+
+void updateClock() {}
+
+void renderClock() {
+  FastLED.clear();
+  
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 10)) {
+    int16_t x = 2;
+    x += drawChar('-', x, 0, CRGB::Red) + 1;
+    x += drawChar('-', x, 0, CRGB::Red) + 1;
+    drawPixel(x+1, 10, CRGB::Red); drawPixel(x+1, 14, CRGB::Red); x += 3;
+    x += drawChar('-', x, 0, CRGB::Red) + 1;
+    drawChar('-', x, 0, CRGB::Red);
+    FastLED.show();
+    return;
+  }
+
+  char timeStr[6];
+  strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo);
+  
+  int totalWidth = 0;
+  for (int i = 0; i < 5; i++) {
+    if (timeStr[i] == ':') {
+      totalWidth += 3;
+    } else {
+      Glyph g = getGlyph(timeStr[i], currentFontIndex);
+      totalWidth += g.width + 1;
+    }
+  }
+  if (totalWidth > 0) totalWidth--;
+  
+  int16_t x = (WIDTH - totalWidth) / 2;
+  if (x < 0) x = 0;
+  
+  CRGB color = CHSV((millis() / 50) % 255, 255, 255);
+  
+  for (int i = 0; i < 5; i++) {
+    if (timeStr[i] == ':') {
+      if (millis() % 1000 < 500) {
+        drawPixel(x+1, 10, color);
+        drawPixel(x+1, 14, color);
+      }
+      x += 3;
+    } else {
+      x += drawChar(timeStr[i], x, 0, color) + 1;
+    }
+  }
+  
+  FastLED.show();
+}
+
 EffectDescriptor effects[] = {
   { "rainbow", resetRainbow, updateRainbow, renderRainbow },
   { "dot", resetDot, updateDot, renderDot },
@@ -408,7 +464,8 @@ EffectDescriptor effects[] = {
   { "plasma", resetPlasma, updatePlasma, renderPlasma },
   { "solid", resetSolid, updateSolid, renderSolid },
   { "text", resetText, updateText, renderText },
-  { "spectrogram", resetSpectrogram, updateSpectrogram, renderSpectrogram }
+  { "spectrogram", resetSpectrogram, updateSpectrogram, renderSpectrogram },
+  { "clock", resetClock, updateClock, renderClock }
 };
 
 constexpr uint8_t EFFECT_COUNT = sizeof(effects) / sizeof(effects[0]);
@@ -666,8 +723,9 @@ String getHelpText() {
   help += "/effect wave\n";
   help += "/effect confetti\n";
   help += "/effect fire\n";
-  help += "/effect plasma\n";
+  help += "/effect text\n";
   help += "/effect spectrogram\n";
+  help += "/effect clock\n";
   help += "/effect next\n";
   help += "/effect prev\n";
   help += "/effect 0\n";
@@ -1004,6 +1062,9 @@ void setupWiFi() {
 
     Serial.print(F("STA IP: "));
     Serial.println(WiFi.localIP());
+
+    configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+    Serial.println(F("NTP configured for UTC+3"));
   } else {
     Serial.println(F("STA connection failed"));
     Serial.println(F("Use AP mode instead"));
@@ -1567,8 +1628,9 @@ const char indexHtml[] PROGMEM = R"rawliteral(
         <button class="eff-btn" data-eff="wave" onclick="sendCommand('/effect wave')">Wave</button>
         <button class="eff-btn" data-eff="confetti" onclick="sendCommand('/effect confetti')">Confetti</button>
         <button class="eff-btn" data-eff="fire" onclick="sendCommand('/effect fire')">Fire</button>
-        <button class="eff-btn" data-eff="plasma" onclick="sendCommand('/effect plasma')">Plasma</button>
+        <button class="eff-btn" data-eff="text" onclick="sendCommand('/effect text')">Text</button>
         <button class="eff-btn" data-eff="spectrogram" onclick="sendCommand('/effect spectrogram')">Spectrogram</button>
+        <button class="eff-btn" data-eff="clock" onclick="sendCommand('/effect clock')">Clock</button>
       </div>
     </div>
 

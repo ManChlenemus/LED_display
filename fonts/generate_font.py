@@ -3,7 +3,7 @@ import glob
 from PIL import Image, ImageFont, ImageDraw
 
 FONTS_DIR = "."
-FONT_SIZE = 18
+FONT_SIZE = 12
 OUTPUT_FILE = "fonts.h"
 
 CHARS = " ?!\"',-_./0123456789@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]abcdefghijklmnopqrstuvwxyzАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя"
