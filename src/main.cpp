@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <FastLED.h>
 #include <time.h>
+#include <WiFiClientSecure.h>
 
 #include "../fonts/fonts.h"
 #include "secrets.h"
@@ -81,6 +82,9 @@ uint8_t textG = 66;
 uint8_t textB = 169;
 
 String scrollingText = "Hello, world!";
+String infoText = "Fetching info...";
+uint32_t lastInfoFetchTime = 0;
+bool isInfoMode = false;
 int16_t textPositionX = WIDTH;
 
 struct EffectDescriptor {
@@ -454,6 +458,20 @@ void renderClock() {
   FastLED.show();
 }
 
+void resetInfo() {
+  isInfoMode = true;
+  scrollingText = infoText;
+  resetText();
+}
+
+void updateInfo() {
+  updateText();
+}
+
+void renderInfo() {
+  renderText();
+}
+
 EffectDescriptor effects[] = {
   { "rainbow", resetRainbow, updateRainbow, renderRainbow },
   { "dot", resetDot, updateDot, renderDot },
@@ -465,7 +483,8 @@ EffectDescriptor effects[] = {
   { "solid", resetSolid, updateSolid, renderSolid },
   { "text", resetText, updateText, renderText },
   { "spectrogram", resetSpectrogram, updateSpectrogram, renderSpectrogram },
-  { "clock", resetClock, updateClock, renderClock }
+  { "clock", resetClock, updateClock, renderClock },
+  { "info", resetInfo, updateInfo, renderInfo }
 };
 
 constexpr uint8_t EFFECT_COUNT = sizeof(effects) / sizeof(effects[0]);
@@ -504,6 +523,7 @@ void setEffect(uint8_t newEffectIndex, bool shouldSave = true) {
   }
 
   imageModeEnabled = false;
+  isInfoMode = false;
   currentEffectIndex = newEffectIndex;
 
   FastLED.clear();
@@ -602,6 +622,17 @@ int extractJsonIntValue(const String& json, const String& key) {
   }
 
   return json.substring(startPos, endPos).toInt();
+}
+
+float extractJsonFloatValue(const String& json, const String& key) {
+  String pattern = "\"" + key + "\":";
+  int startPos = json.indexOf(pattern);
+  if (startPos < 0) return 0.0;
+  startPos += pattern.length();
+  int endPos = json.indexOf(",", startPos);
+  if (endPos < 0) endPos = json.indexOf("}", startPos);
+  if (endPos < 0) return 0.0;
+  return json.substring(startPos, endPos).toFloat();
 }
 
 int8_t findEffectByName(String name) {
@@ -726,6 +757,7 @@ String getHelpText() {
   help += "/effect text\n";
   help += "/effect spectrogram\n";
   help += "/effect clock\n";
+  help += "/effect info\n";
   help += "/effect next\n";
   help += "/effect prev\n";
   help += "/effect 0\n";
@@ -1023,6 +1055,27 @@ void handleSerial() {
       Serial.println(F("Serial command too long, buffer cleared"));
       serialBuffer = "";
     }
+  }
+}
+
+void fetchInfoData() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  HTTPClient http;
+  WiFiClient client;
+  String url = String(PROXY_HOST) + "/esp/info?key=" + DEVICE_KEY;
+  
+  if (http.begin(client, url)) {
+    if (http.GET() == HTTP_CODE_OK) {
+      String payload = http.getString();
+      if (payload.length() > 0) {
+        infoText = payload;
+        if (isInfoMode) {
+          scrollingText = infoText;
+        }
+      }
+    }
+    http.end();
   }
 }
 
@@ -1631,6 +1684,7 @@ const char indexHtml[] PROGMEM = R"rawliteral(
         <button class="eff-btn" data-eff="text" onclick="sendCommand('/effect text')">Text</button>
         <button class="eff-btn" data-eff="spectrogram" onclick="sendCommand('/effect spectrogram')">Spectrogram</button>
         <button class="eff-btn" data-eff="clock" onclick="sendCommand('/effect clock')">Clock</button>
+        <button class="eff-btn" data-eff="info" onclick="sendCommand('/effect info')">Info</button>
       </div>
     </div>
 
@@ -1905,6 +1959,11 @@ void loop() {
 
   handleImageProxy();
   handleProxy();
+
+  if (millis() - lastInfoFetchTime > 900000 || lastInfoFetchTime == 0) {
+    lastInfoFetchTime = millis();
+    fetchInfoData();
+  }
 
   vTaskDelay(pdMS_TO_TICKS(10));
 }

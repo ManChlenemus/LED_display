@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import Response, PlainTextResponse
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
 
@@ -46,6 +46,66 @@ next_command_id = 1
 
 latest_image_bytes: bytes | None = None
 latest_image_id = 0
+
+cached_info_text: str = "Fetching info..."
+
+def fetch_info_loop() -> None:
+    global cached_info_text
+    print("Info fetching loop started", flush=True)
+
+    while True:
+        try:
+            temp = "--"
+            usd = "--"
+            eur = "--"
+            btc = "--"
+
+            try:
+                res = requests.get("http://api.open-meteo.com/v1/forecast?latitude=55.7512&longitude=37.6184&current_weather=true", timeout=10)
+                if res.status_code == 200:
+                    t = res.json().get("current_weather", {}).get("temperature")
+                    if t is not None:
+                        temp = f"+{t:.1f}" if t > 0 else f"{t:.1f}"
+            except Exception as e:
+                print(f"Weather error: {e}")
+
+            try:
+                res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=10)
+                if res.status_code == 200:
+                    r = res.json().get("rates", {}).get("RUB")
+                    if r is not None:
+                        usd = f"{r:.1f}"
+            except Exception as e:
+                print(f"USD error: {e}")
+
+            try:
+                res = requests.get("https://open.er-api.com/v6/latest/EUR", timeout=10)
+                if res.status_code == 200:
+                    r = res.json().get("rates", {}).get("RUB")
+                    if r is not None:
+                        eur = f"{r:.1f}"
+            except Exception as e:
+                print(f"EUR error: {e}")
+
+            try:
+                res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
+                if res.status_code == 200:
+                    price = float(res.json().get("price", 0))
+                    if price > 0:
+                        btc = f"{int(price)}"
+            except Exception as e:
+                print(f"BTC error: {e}")
+
+            new_text = f"MSK:{temp}C | USD:{usd} | EUR:{eur} | BTC:${btc}"
+            
+            with state_lock:
+                cached_info_text = new_text
+
+        except Exception as error:
+            print(f"fetch_info_loop error: {error}", flush=True)
+
+        time.sleep(900)
+
 
 
 class ResultPayload(BaseModel):
@@ -372,4 +432,14 @@ def get_image_data(key: str = Query(...)):
     )
 
 
+@app.get("/esp/info")
+def get_info(key: str = Query(...)):
+    if key != DEVICE_KEY:
+        raise HTTPException(status_code=403, detail="Invalid key")
+    
+    with state_lock:
+        return PlainTextResponse(content=cached_info_text)
+
+
 threading.Thread(target=telegram_polling_loop, daemon=True).start()
+threading.Thread(target=fetch_info_loop, daemon=True).start()
