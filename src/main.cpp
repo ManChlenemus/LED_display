@@ -1,13 +1,15 @@
 #include <Arduino.h>
 #include <ArduinoOTA.h>
-#include <EEPROM.h>
-#include <ESP8266HTTPClient.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266WiFi.h>
+#include <Preferences.h>
+#include <HTTPClient.h>
+#include <WebServer.h>
+#include <WiFi.h>
 #include <FastLED.h>
 
 #include "../fonts/fonts.h"
 #include "secrets.h"
+
+Preferences preferences;
 uint8_t currentFontIndex = 0;
 
 #define LED_TYPE WS2812B
@@ -23,22 +25,19 @@ uint8_t brightness = 80;
 bool panelEnabled = true;
 uint32_t lastFrameTime = 0;
 
-constexpr uint16_t EEPROM_SIZE = 8;
-
-constexpr uint8_t SETTINGS_MAGIC = 0x42;
-constexpr uint8_t EEPROM_ADDR_MAGIC = 0;
-constexpr uint8_t EEPROM_ADDR_EFFECT = 1;
+const char* PREF_NAMESPACE = "settings";
+const char* PREF_KEY_EFFECT = "effectIdx";
 
 const char* WIFI_SSID = SECRET_WIFI_SSID;
 const char* WIFI_PASSWORD = SECRET_WIFI_PASSWORD;
 const char* AP_SSID = "LED_MATRIX";
 const char* AP_PASSWORD = "12345678";
 
-ESP8266WebServer server(80);
+WebServer server(80);
 
 const char* DEVICE_KEY = SECRET_DEVICE_KEY;
 const char* PROXY_HOST = SECRET_PROXY_HOST;
-constexpr uint32_t PROXY_CHECK_INTERVAL_MS = 10000;
+constexpr uint32_t PROXY_CHECK_INTERVAL_MS = 2000;
 constexpr uint32_t PROXY_ERROR_BACKOFF_MS = 20000;
 constexpr uint32_t HTTP_TIMEOUT_MS = 3000;
 constexpr uint32_t IMAGE_HTTP_TIMEOUT_MS = 5000;
@@ -46,7 +45,7 @@ uint32_t lastProxyCheckTime = 0;
 uint32_t nextProxyAllowedTime = 0;
 
 bool telegramPollingEnabled = false;
-constexpr uint32_t IMAGE_CHECK_INTERVAL_MS = 5000;
+constexpr uint32_t IMAGE_CHECK_INTERVAL_MS = 2000;
 uint32_t currentImageId = 0;
 uint32_t lastImageCheckTime = 0;
 bool imageModeEnabled = false;
@@ -372,6 +371,33 @@ void renderText() {
   FastLED.show();
 }
 
+uint32_t spectrogramTime = 0;
+
+void resetSpectrogram() {
+  spectrogramTime = 0;
+  FastLED.clear();
+}
+
+void updateSpectrogram() {
+  spectrogramTime += 15;
+}
+
+void renderSpectrogram() {
+  fadeToBlackBy(leds, NUM_LEDS, 80);
+  
+  for (uint8_t x = 0; x < WIDTH; x++) {
+    uint8_t noise = inoise8(x * 35, spectrogramTime);
+    uint8_t colHeight = dim8_video(noise); 
+    colHeight = map(colHeight, 0, 255, 0, HEIGHT);
+    
+    for (uint8_t y = 0; y < colHeight; y++) {
+      uint8_t hue = map(y, 0, HEIGHT, 96, 0);
+      drawPixel(x, y, CHSV(hue, 255, 200));
+    }
+  }
+  FastLED.show();
+}
+
 EffectDescriptor effects[] = {
   { "rainbow", resetRainbow, updateRainbow, renderRainbow },
   { "dot", resetDot, updateDot, renderDot },
@@ -381,7 +407,8 @@ EffectDescriptor effects[] = {
   { "fire", resetFire, updateFire, renderFire },
   { "plasma", resetPlasma, updatePlasma, renderPlasma },
   { "solid", resetSolid, updateSolid, renderSolid },
-  { "text", resetText, updateText, renderText }
+  { "text", resetText, updateText, renderText },
+  { "spectrogram", resetSpectrogram, updateSpectrogram, renderSpectrogram }
 };
 
 constexpr uint8_t EFFECT_COUNT = sizeof(effects) / sizeof(effects[0]);
@@ -389,21 +416,22 @@ constexpr uint8_t EFFECT_COUNT = sizeof(effects) / sizeof(effects[0]);
 uint8_t currentEffectIndex = 0;
 
 void saveEffect() {
-  EEPROM.write(EEPROM_ADDR_MAGIC, SETTINGS_MAGIC);
-  EEPROM.write(EEPROM_ADDR_EFFECT, currentEffectIndex);
-  EEPROM.commit();
+  preferences.begin(PREF_NAMESPACE, false);
+  preferences.putUChar(PREF_KEY_EFFECT, currentEffectIndex);
+  preferences.end();
 }
 
 void loadEffect() {
-  uint8_t magic = EEPROM.read(EEPROM_ADDR_MAGIC);
-
-  if (magic != SETTINGS_MAGIC) {
+  preferences.begin(PREF_NAMESPACE, true);
+  if (!preferences.isKey(PREF_KEY_EFFECT)) {
+    preferences.end();
     currentEffectIndex = 0;
     saveEffect();
     return;
   }
 
-  uint8_t savedEffectIndex = EEPROM.read(EEPROM_ADDR_EFFECT);
+  uint8_t savedEffectIndex = preferences.getUChar(PREF_KEY_EFFECT, 0);
+  preferences.end();
 
   if (savedEffectIndex < EFFECT_COUNT) {
     currentEffectIndex = savedEffectIndex;
@@ -589,6 +617,10 @@ String getStatusText() {
 
   status += "Free heap: ";
   status += ESP.getFreeHeap();
+  status += "\n";
+
+  status += "FPS: ";
+  status += FastLED.getFPS();
 
   return status;
 }
@@ -635,6 +667,7 @@ String getHelpText() {
   help += "/effect confetti\n";
   help += "/effect fire\n";
   help += "/effect plasma\n";
+  help += "/effect spectrogram\n";
   help += "/effect next\n";
   help += "/effect prev\n";
   help += "/effect 0\n";
@@ -942,7 +975,7 @@ void setupWiFi() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
-  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  WiFi.setSleep(false);
 
   WiFi.softAP(AP_SSID, AP_PASSWORD);
 
@@ -1535,6 +1568,7 @@ const char indexHtml[] PROGMEM = R"rawliteral(
         <button class="eff-btn" data-eff="confetti" onclick="sendCommand('/effect confetti')">Confetti</button>
         <button class="eff-btn" data-eff="fire" onclick="sendCommand('/effect fire')">Fire</button>
         <button class="eff-btn" data-eff="plasma" onclick="sendCommand('/effect plasma')">Plasma</button>
+        <button class="eff-btn" data-eff="spectrogram" onclick="sendCommand('/effect spectrogram')">Spectrogram</button>
       </div>
     </div>
 
@@ -1629,6 +1663,7 @@ const char indexHtml[] PROGMEM = R"rawliteral(
           <div class="status-row"><span class="status-label">IP Address</span><span class="status-value">${data.staIp}</span></div>
           <div class="status-row"><span class="status-label">AP IP</span><span class="status-value">${data.apIp}</span></div>
           <div class="status-row"><span class="status-label">Free RAM</span><span class="status-value">${Math.round(data.freeHeap/1024)} KB</span></div>
+          <div class="status-row"><span class="status-label">FPS</span><span class="status-value" style="color:var(--accent);">${data.fps}</span></div>
         `;
       } catch (e) {
         document.getElementById('dashboard').innerHTML = '<div class="status-row" style="color:#ff4444;">Device is offline / unreachable</div>';
@@ -1701,6 +1736,10 @@ void handleStatus() {
   response += ESP.getFreeHeap();
   response += ",";
 
+  response += "\"fps\":";
+  response += FastLED.getFPS();
+  response += ",";
+
   response += "\"apIp\":\"";
   response += WiFi.softAPIP().toString();
   response += "\",";
@@ -1728,6 +1767,36 @@ void setupWebServer() {
   Serial.println(F("Web server started"));
 }
 
+TaskHandle_t renderTaskHandle;
+
+void renderTask(void* pvParameters) {
+  for (;;) {
+    if (!panelEnabled) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
+    }
+
+    if (imageModeEnabled) {
+      static uint32_t lastImageShowTime = 0;
+      if (millis() - lastImageShowTime > 1000) {
+        lastImageShowTime = millis();
+        FastLED.show();
+      }
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    uint32_t now = millis();
+    if (now - lastFrameTime >= FRAME_INTERVAL_MS) {
+      lastFrameTime = now;
+      renderCurrentEffect();
+      updateCurrentEffect();
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(50);
@@ -1735,12 +1804,12 @@ void setup() {
 
   randomSeed(ESP.getCycleCount());
 
-  EEPROM.begin(EEPROM_SIZE);
   loadEffect();
 
   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
   FastLED.setBrightness(brightness);
   FastLED.setMaxPowerInVoltsAndMilliamps(5, 40000);
+  FastLED.setDither(1);
 
   FastLED.clear();
   FastLED.show();
@@ -1750,6 +1819,16 @@ void setup() {
   setupOTA();
 
   setEffect(currentEffectIndex, false);
+
+  xTaskCreatePinnedToCore(
+    renderTask,
+    "RenderTask",
+    8192,
+    NULL,
+    1,
+    &renderTaskHandle,
+    0
+  );
 
   Serial.println();
   Serial.println(F("Matrix controller started"));
@@ -1765,25 +1844,5 @@ void loop() {
   handleImageProxy();
   handleProxy();
 
-  if (!panelEnabled) {
-    return;
-  }
-
-  if (imageModeEnabled) {
-    static uint32_t lastImageShowTime = 0;
-    if (millis() - lastImageShowTime > 1000) {
-      lastImageShowTime = millis();
-      FastLED.show();
-    }
-    return;
-  }
-
-  uint32_t now = millis();
-
-  if (now - lastFrameTime >= FRAME_INTERVAL_MS) {
-    lastFrameTime = now;
-
-    renderCurrentEffect();
-    updateCurrentEffect();
-  }
+  vTaskDelay(pdMS_TO_TICKS(10));
 }

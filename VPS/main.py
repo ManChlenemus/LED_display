@@ -180,11 +180,12 @@ def handle_telegram_photo(chat_id: str, message: dict) -> None:
         if len(matrix_bytes) != IMAGE_BYTES:
             raise RuntimeError(f"Invalid image byte size: {len(matrix_bytes)}")
 
-        image_id = store_image(matrix_bytes)
+        image_id = store_image(matrix_bytes)        
+        queue_command(chat_id, "/image")
 
         telegram_send_message(
             chat_id,
-            f"Photo received.\nImage id: {image_id}\n(Waiting for ESP to download...)",
+            f"Photo received.\nImage id: {image_id}"
         )
 
         print(
